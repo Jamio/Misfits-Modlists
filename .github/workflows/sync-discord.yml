@@ -121,15 +121,24 @@ jobs:
           except (ValueError, KeyError):
               raise SystemExit("Invalid placeholder in the Discord message template.") from None
           if not 0 < len(description.encode("utf-16-le")) // 2 <= 4096:
-              raise SystemExit("The Discord embed description must contain 1–4096 characters.")
+              raise SystemExit("The Discord container text must contain 1–4096 characters.")
 
           message_id = state.read_text(encoding="utf-8").strip() if state.is_file() else ""
           if not re.fullmatch(r"[0-9]{17,20}", message_id):
               raise SystemExit("Missing or invalid saved Discord message ID. Restore the tracked ID.")
 
           message = {
-              "content": "",
-              "embeds": [{"color": 0xC0392B, "description": description}],
+              "content": None,
+              "embeds": None,
+              "flags": 1 << 15,
+              "components": [{
+                  "type": 17,
+                  "accent_color": 0xC0392B,
+                  "components": [
+                      {"type": 10, "content": description},
+                      {"type": 13, "file": {"url": f"attachment://{preset.name}"}},
+                  ],
+              }],
               "allowed_mentions": {"parse": []},
               "attachments": [{"id": 0, "filename": preset.name}],
           }
@@ -144,7 +153,7 @@ jobs:
               webhook,
           ):
               raise SystemExit("DISCORD_WEBHOOK_URL is missing or invalid.")
-          endpoint = f"{webhook}/messages/{message_id}"
+          endpoint = f"{webhook}/messages/{message_id}?with_components=true"
 
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -203,5 +212,7 @@ jobs:
 
           if not isinstance(result, dict) or result.get("id") != message_id:
               raise SystemExit("Discord returned an unexpected message ID.")
+          if not result.get("flags", 0) & (1 << 15) or not result.get("components"):
+              raise SystemExit("Discord did not confirm the container layout.")
           print(f"Discord message synced. Workshop mods: {len(ids)}")
           PY

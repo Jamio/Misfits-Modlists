@@ -43,6 +43,7 @@ jobs:
           import re
           import urllib.request
           import urllib.error
+          from collections import Counter
           from concurrent.futures import ThreadPoolExecutor
           from decimal import Decimal
           from http.client import HTTPException
@@ -116,20 +117,35 @@ jobs:
           class WorkshopPage(HTMLParser):
               def __init__(self):
                   super().__init__()
-                  self.text = []
-                  self.hidden = False
+                  self.columns = {"detailsStatLeft": [], "detailsStatRight": []}
+                  self.column = None
+                  self.depth = 0
+                  self.parts = []
 
               def handle_starttag(self, tag, attrs):
-                  if tag in ("script", "style"):
-                      self.hidden = True
+                  if tag != "div":
+                      return
+                  if self.column:
+                      self.depth += 1
+                      return
+                  classes = (dict(attrs).get("class") or "").split()
+                  for name in self.columns:
+                      if name in classes:
+                          self.column = name
+                          self.depth = 1
+                          self.parts = []
+                          break
 
               def handle_endtag(self, tag):
-                  if tag in ("script", "style"):
-                      self.hidden = False
+                  if tag == "div" and self.column:
+                      self.depth -= 1
+                      if self.depth == 0:
+                          self.columns[self.column].append(" ".join("".join(self.parts).split()))
+                          self.column = None
 
               def handle_data(self, data):
-                  if not self.hidden:
-                      self.text.append(data)
+                  if self.column:
+                      self.parts.append(data)
 
           def workshop_size(item_id):
               url = f"https://steamcommunity.com/sharedfiles/filedetails/?id={item_id}&l=english"
@@ -137,32 +153,42 @@ jobs:
               try:
                   with urllib.request.urlopen(request, timeout=6) as response:
                       page = response.read(2_000_001)
+              except urllib.error.HTTPError as error:
+                  return None, f"HTTP {error.code}"
               except (OSError, HTTPException):
-                  return None
+                  return None, "connection error"
               if len(page) > 2_000_000:
-                  return None
+                  return None, "response too large"
               parser = WorkshopPage()
               parser.feed(page.decode("utf-8", errors="replace"))
               parser.close()
-              match = re.search(
-                  r"\bFile Size\s+(?:(?:Posted|Updated)\s+){0,2}"
-                  r"([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)\b",
-                  " ".join(" ".join(parser.text).split()),
+              labels = parser.columns["detailsStatLeft"]
+              values = parser.columns["detailsStatRight"]
+              if len(labels) != len(values) or "File Size" not in labels:
+                  return None, "size field missing"
+              match = re.fullmatch(
+                  r"([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)",
+                  values[labels.index("File Size")],
               )
               if not match:
-                  return None
+                  return None, "unrecognized size"
               amount, unit = match.groups()
-              return Decimal(amount) * 1000 ** ("B", "KB", "MB", "GB", "TB").index(unit)
+              return Decimal(amount) * 1000 ** ("B", "KB", "MB", "GB", "TB").index(unit), None
 
           def estimate_size(item_ids):
               with ThreadPoolExecutor(max_workers=8) as pool:
-                  sizes = [size for size in pool.map(workshop_size, sorted(item_ids)) if size is not None]
+                  results = list(pool.map(workshop_size, sorted(item_ids)))
+              sizes = [size for size, error in results if error is None]
+              failures = Counter(error for _, error in results if error is not None)
+              print(f"Workshop size lookup: {len(sizes)}/{len(item_ids)} sizes read.")
+              for error, count in sorted(failures.items()):
+                  print(f"  {error}: {count}")
               if not sizes:
-                  return "unavailable (Steam reported no sizes)"
+                  return "unavailable (could not read Workshop sizes)"
               total_gb = sum(sizes) / 10**9
               amount = f"~{total_gb:,.1f} GB" if total_gb >= Decimal("0.1") else "<0.1 GB"
-              if len(sizes) < len(item_ids):
-                  return f"{amount} subtotal ({len(sizes)}/{len(item_ids)} mods reported)"
+              if failures:
+                  return f"{amount} subtotal ({len(sizes)}/{len(item_ids)} mods checked)"
               return amount
 
           template = Template(Path(".github/discord-modlist-message.md").read_text(encoding="utf-8"))

@@ -1,1 +1,181 @@
 
+name: Sync WW2 modlist to Discord
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Misfits WW2.html'
+      - '.github/workflows/sync-discord.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: discord-modlist-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Post or update Discord attachment
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+          import urllib.error
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from html.parser import HTMLParser
+
+          preset = Path("Misfits WW2.html")
+          state = Path(".github/discord-ww2-message-id.txt")
+          webhook = os.environ["DISCORD_WEBHOOK_URL"].rstrip("/")
+
+          class PresetParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.ids = set()
+                  self.in_mod = False
+                  self.in_name = False
+                  self.names = 0
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if tag == "tr":
+                      self.in_mod = attrs.get("data-type") == "ModContainer"
+                  if self.in_mod and tag == "td":
+                      if attrs.get("data-type") == "DisplayName":
+                          self.in_name = True
+                  if self.in_mod:
+                      for value in attrs.values():
+                          if value:
+                              match = re.search(
+                                  r"steamcommunity.com/sharedfiles/filedetails/\?id=(\d+)",
+                                  value
+                              )
+                              if match:
+                                  self.ids.add(match.group(1))
+
+              def handle_endtag(self, tag):
+                  if tag == "td":
+                      self.in_name = False
+                  if tag == "tr":
+                      self.in_mod = False
+
+              def handle_data(self, data):
+                  if self.in_name and data.strip():
+                      self.names += 1
+
+          html = preset.read_text(encoding="utf-8-sig")
+          parser = PresetParser()
+          parser.feed(html)
+
+          # Count unique Workshop links in the preset.
+          ids = set(re.findall(
+              r"steamcommunity\.com/sharedfiles/filedetails/"
+              r"\?(?:[^\"'<>\s]*?&amp;)?id=(\d+)",
+              html
+          ))
+          count = len(ids)
+
+          if count == 0:
+              raise RuntimeError(
+                  "No Workshop IDs found. Refusing to publish an empty preset."
+              )
+
+          today = datetime.now(timezone.utc).strftime("%d %B %Y")
+          message = {
+              "content": (
+                  "**MISFITS WW2 — MODLIST**\n"
+                  f"📦 **{count} Workshop mods**\n"
+                  f"📅 Updated: {today}\n\n"
+                  "Download the attached HTML preset and import "
+                  "it into the Arma 3 Launcher."
+              ),
+              "attachments": []
+          }
+
+          message_id = state.read_text().strip() if state.exists() else ""
+          endpoint = webhook + (
+              f"/messages/{message_id}" if message_id else ""
+          )
+          endpoint += "?wait=true"
+
+          boundary = "MisfitsDiscordPresetBoundary"
+          body = bytearray()
+
+          def part(name, content, filename=None, content_type=None):
+              body.extend(f"--{boundary}\r\n".encode())
+              disposition = f'form-data; name="{name}"'
+              if filename:
+                  disposition += f'; filename="{filename}"'
+              body.extend(
+                  f"Content-Disposition: {disposition}\r\n".encode()
+              )
+              if content_type:
+                  body.extend(
+                      f"Content-Type: {content_type}\r\n".encode()
+                  )
+              body.extend(b"\r\n")
+              body.extend(content)
+              body.extend(b"\r\n")
+
+          part(
+              "payload_json",
+              json.dumps(message).encode(),
+              content_type="application/json"
+          )
+          part(
+              "files[0]",
+              preset.read_bytes(),
+              filename=preset.name,
+              content_type="application/octet-stream"
+          )
+          body.extend(f"--{boundary}--\r\n".encode())
+
+          request = urllib.request.Request(
+              endpoint,
+              data=bytes(body),
+              headers={
+                  "Content-Type": f"multipart/form-data; boundary={boundary}",
+                  "User-Agent": "Misfits-Modlist-Sync/1.0"
+              },
+              method="PATCH" if message_id else "POST"
+          )
+
+          with urllib.request.urlopen(request, timeout=60) as response:
+              result = json.load(response)
+
+          new_id = str(result["id"])
+          state.parent.mkdir(parents=True, exist_ok=True)
+          state.write_text(new_id + "\n")
+          print(f"Discord message synced. Workshop mods: {count}")
+          PY
+
+      - name: Save Discord message ID
+        run: |
+          if git diff --quiet -- .github/discord-ww2-message-id.txt \
+             && git ls-files --error-unmatch \
+                .github/discord-ww2-message-id.txt >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/discord-ww2-message-id.txt
+          git commit -m "Store WW2 Discord message ID [skip ci]"
+          git push
+

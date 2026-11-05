@@ -4,5 +4,5 @@
 
 Download the attached HTML preset and import it into the Arma 3 Launcher.
 
-**DLC listed in the preset**
+**DLC Required:**
 ${dlc_list}

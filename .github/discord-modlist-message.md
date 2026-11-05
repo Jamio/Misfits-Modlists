@@ -1,4 +1,4 @@
-**${modlist_name} — MODLIST**
+# ${modlist_name} — MODLIST
 📦 **${mod_count} Workshop mods**
 💾 ${workshop_size}
 📅 Updated: ${updated_date}

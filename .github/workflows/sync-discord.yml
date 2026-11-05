@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'Misfits WW2.html'
+      - '.github/ww2-banner.png'
       - '.github/workflows/sync-discord.yml'
       - '.github/discord-modlist-message.md'
       - '.github/discord-dlc-compatibility.json'
@@ -53,6 +54,7 @@ jobs:
           from uuid import uuid4
 
           preset = Path("Misfits WW2.html")
+          banner = Path(".github/ww2-banner.png")
           state = Path(".github/discord-ww2-message-id.txt")
           class DlcParser(HTMLParser):
               def __init__(self):
@@ -172,6 +174,11 @@ jobs:
           if not re.fullmatch(r"[0-9]{17,20}", message_id):
               raise SystemExit("Missing or invalid saved Discord message ID. Restore the tracked ID.")
 
+          title, _, details = description.partition("\n")
+          if not details.strip():
+              raise SystemExit("The Discord template needs a heading followed by message details.")
+          banner_bytes = banner.read_bytes()
+
           message = {
               "content": None,
               "embeds": None,
@@ -180,12 +187,20 @@ jobs:
                   "type": 17,
                   "accent_color": 0xC0392B,
                   "components": [
-                      {"type": 10, "content": description},
+                      {"type": 10, "content": title},
+                      {"type": 12, "items": [{
+                          "media": {"url": f"attachment://{banner.name}"},
+                          "description": "Misfits WWII banner with a tank silhouette",
+                      }]},
+                      {"type": 10, "content": details.strip()},
                       {"type": 13, "file": {"url": f"attachment://{preset.name}"}},
                   ],
               }],
               "allowed_mentions": {"parse": []},
-              "attachments": [{"id": 0, "filename": preset.name}],
+              "attachments": [
+                  {"id": 0, "filename": preset.name},
+                  {"id": 1, "filename": banner.name},
+              ],
           }
           if os.environ.get("DRY_RUN") == "true":
               print(json.dumps(message, ensure_ascii=False, indent=2))
@@ -234,6 +249,7 @@ jobs:
               filename=preset.name,
               content_type="application/octet-stream"
           )
+          part("files[1]", banner_bytes, filename=banner.name, content_type="image/png")
           body.extend(f"--{boundary}--\r\n".encode())
 
           request = urllib.request.Request(

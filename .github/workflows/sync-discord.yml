@@ -1,17 +1,10 @@
 name: Sync WW2 modlist to Discord
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'Misfits WW2.html'
-      - '.github/workflows/sync-discord.yml'
-      - '.github/discord-modlist-message.md'
-      - '.github/discord-dlc-compatibility.json'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Preview the message without contacting Discord
+        description: Preview only. Uncheck to post one message to the test webhook.
         type: boolean
         default: true
 
@@ -19,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: discord-modlist-sync
+  group: discord-ww2-container-test
   cancel-in-progress: false
 
 jobs:
   sync:
-    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/discord-ww2-container-test'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -32,10 +25,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Preview or edit Discord message
+      - name: Preview or post test container
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_TEST_WEBHOOK_URL: ${{ secrets.DISCORD_TEST_WEBHOOK_URL }}
         run: |
           python3 - <<'PY'
           import json
@@ -50,7 +43,6 @@ jobs:
           from uuid import uuid4
 
           preset = Path("Misfits WW2.html")
-          state = Path(".github/discord-ww2-message-id.txt")
           class DlcParser(HTMLParser):
               def __init__(self):
                   super().__init__()
@@ -121,30 +113,33 @@ jobs:
           except (ValueError, KeyError):
               raise SystemExit("Invalid placeholder in the Discord message template.") from None
           if not 0 < len(description.encode("utf-16-le")) // 2 <= 4096:
-              raise SystemExit("The Discord embed description must contain 1–4096 characters.")
-
-          message_id = state.read_text(encoding="utf-8").strip() if state.is_file() else ""
-          if not re.fullmatch(r"[0-9]{17,20}", message_id):
-              raise SystemExit("Missing or invalid saved Discord message ID. Restore the tracked ID.")
+              raise SystemExit("The Discord container text must contain 1–4096 characters.")
 
           message = {
-              "content": "",
-              "embeds": [{"color": 0xC0392B, "description": description}],
+              "flags": 1 << 15,
+              "components": [{
+                  "type": 17,
+                  "accent_color": 0xC0392B,
+                  "components": [
+                      {"type": 10, "content": description},
+                      {"type": 13, "file": {"url": f"attachment://{preset.name}"}},
+                  ],
+              }],
               "allowed_mentions": {"parse": []},
               "attachments": [{"id": 0, "filename": preset.name}],
           }
           if os.environ.get("DRY_RUN") == "true":
               print(json.dumps(message, ensure_ascii=False, indent=2))
-              print(f"Would edit message {message_id} with {len(preset_bytes)} attachment bytes.")
+              print(f"Would post one test message with {len(preset_bytes)} attachment bytes.")
               raise SystemExit(0)
 
-          webhook = os.environ.get("DISCORD_WEBHOOK_URL", "").strip().rstrip("/")
+          webhook = os.environ.get("DISCORD_TEST_WEBHOOK_URL", "").strip().rstrip("/")
           if not re.fullmatch(
               r"https://(?:discord\.com|discordapp\.com)/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9_-]+",
               webhook,
           ):
-              raise SystemExit("DISCORD_WEBHOOK_URL is missing or invalid.")
-          endpoint = f"{webhook}/messages/{message_id}"
+              raise SystemExit("DISCORD_TEST_WEBHOOK_URL is missing or invalid.")
+          endpoint = f"{webhook}?wait=true&with_components=true"
 
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -189,7 +184,7 @@ jobs:
                   "Content-Type": f"multipart/form-data; boundary={boundary}",
                   "User-Agent": "Misfits-Modlist-Sync/1.0"
               },
-              method="PATCH"
+              method="POST"
           )
 
           try:
@@ -197,11 +192,11 @@ jobs:
               with opener.open(request, timeout=60) as response:
                   result = json.load(response)
           except urllib.error.HTTPError as error:
-              raise SystemExit(f"Discord rejected the edit (HTTP {error.code}). Check the webhook and saved ID.") from None
+              raise SystemExit(f"Discord rejected the test post (HTTP {error.code}). Check the test webhook.") from None
           except (OSError, ValueError):
-              raise SystemExit("Could not confirm the Discord edit. Check Discord and retry if needed.") from None
+              raise SystemExit("Could not confirm the test post. Check the test channel before retrying.") from None
 
-          if not isinstance(result, dict) or result.get("id") != message_id:
-              raise SystemExit("Discord returned an unexpected message ID.")
-          print(f"Discord message synced. Workshop mods: {len(ids)}")
+          if not isinstance(result, dict) or not re.fullmatch(r"[0-9]{17,20}", str(result.get("id"))):
+              raise SystemExit("Discord returned an unexpected test response. Check the test channel.")
+          print(f"Posted test message {result['id']}. Workshop mods: {len(ids)}")
           PY

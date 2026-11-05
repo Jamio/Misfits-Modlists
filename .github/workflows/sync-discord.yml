@@ -41,10 +41,9 @@ jobs:
           import json
           import os
           import re
+          import urllib.parse
           import urllib.request
           import urllib.error
-          from collections import Counter
-          from concurrent.futures import ThreadPoolExecutor
           from decimal import Decimal
           from http.client import HTTPException
           from datetime import datetime, timezone
@@ -114,80 +113,44 @@ jobs:
               )
               for name in parser.names
           ]
-          class WorkshopPage(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.columns = {"detailsStatLeft": [], "detailsStatRight": []}
-                  self.column = None
-                  self.depth = 0
-                  self.parts = []
-
-              def handle_starttag(self, tag, attrs):
-                  if tag != "div":
-                      return
-                  if self.column:
-                      self.depth += 1
-                      return
-                  classes = (dict(attrs).get("class") or "").split()
-                  for name in self.columns:
-                      if name in classes:
-                          self.column = name
-                          self.depth = 1
-                          self.parts = []
-                          break
-
-              def handle_endtag(self, tag):
-                  if tag == "div" and self.column:
-                      self.depth -= 1
-                      if self.depth == 0:
-                          self.columns[self.column].append(" ".join("".join(self.parts).split()))
-                          self.column = None
-
-              def handle_data(self, data):
-                  if self.column:
-                      self.parts.append(data)
-
-          def workshop_size(item_id):
-              url = f"https://steamcommunity.com/sharedfiles/filedetails/?id={item_id}&l=english"
-              request = urllib.request.Request(url, headers={"User-Agent": "Misfits-Modlist-Sync/1.0"})
-              try:
-                  with urllib.request.urlopen(request, timeout=6) as response:
-                      page = response.read(2_000_001)
-              except urllib.error.HTTPError as error:
-                  return None, f"HTTP {error.code}"
-              except (OSError, HTTPException):
-                  return None, "connection error"
-              if len(page) > 2_000_000:
-                  return None, "response too large"
-              parser = WorkshopPage()
-              parser.feed(page.decode("utf-8", errors="replace"))
-              parser.close()
-              labels = parser.columns["detailsStatLeft"]
-              values = parser.columns["detailsStatRight"]
-              if len(labels) != len(values) or "File Size" not in labels:
-                  return None, "size field missing"
-              match = re.fullmatch(
-                  r"([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)",
-                  values[labels.index("File Size")],
-              )
-              if not match:
-                  return None, "unrecognized size"
-              amount, unit = match.groups()
-              return Decimal(amount) * 1000 ** ("B", "KB", "MB", "GB", "TB").index(unit), None
-
           def estimate_size(item_ids):
-              with ThreadPoolExecutor(max_workers=8) as pool:
-                  results = list(pool.map(workshop_size, sorted(item_ids)))
-              sizes = [size for size, error in results if error is None]
-              failures = Counter(error for _, error in results if error is not None)
+              endpoint = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
+              ordered_ids = sorted(item_ids)
+              sizes = {}
+              for offset in range(0, len(ordered_ids), 50):
+                  batch = ordered_ids[offset:offset + 50]
+                  fields = {"itemcount": len(batch)}
+                  fields.update({f"publishedfileids[{index}]": item for index, item in enumerate(batch)})
+                  request = urllib.request.Request(endpoint, data=urllib.parse.urlencode(fields).encode("ascii"))
+                  try:
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          payload = json.load(response)
+                  except urllib.error.HTTPError as error:
+                      print(f"Steam batch lookup returned HTTP {error.code}.")
+                      break
+                  except (OSError, HTTPException, ValueError):
+                      print("Steam batch lookup failed or returned invalid JSON.")
+                      break
+                  data = payload.get("response", {}) if isinstance(payload, dict) else {}
+                  rows = data.get("publishedfiledetails", []) if isinstance(data, dict) else []
+                  if not isinstance(rows, list):
+                      continue
+                  for row in rows:
+                      if not isinstance(row, dict) or row.get("result") != 1:
+                          continue
+                      item = str(row.get("publishedfileid", ""))
+                      size = str(row.get("file_size", ""))
+                      if item in batch and re.fullmatch(r"[1-9][0-9]{0,19}", size):
+                          sizes[item] = int(size)
+
               print(f"Workshop size lookup: {len(sizes)}/{len(item_ids)} sizes read.")
-              for error, count in sorted(failures.items()):
-                  print(f"  {error}: {count}")
+              if len(sizes) != len(item_ids) and os.environ.get("DRY_RUN") != "true":
+                  raise SystemExit("Workshop size lookup incomplete. Existing Discord message was left unchanged.")
               if not sizes:
                   return "unavailable (could not read Workshop sizes)"
-              total_gb = sum(sizes) / 10**9
+              total_gb = Decimal(sum(sizes.values())) / 10**9
               amount = f"~{total_gb:,.1f} GB" if total_gb >= Decimal("0.1") else "<0.1 GB"
-              if failures:
+              if len(sizes) != len(item_ids):
                   return f"{amount} subtotal ({len(sizes)}/{len(item_ids)} mods checked)"
               return amount
 

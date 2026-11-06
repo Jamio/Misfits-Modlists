@@ -1,0 +1,49 @@
+name: Add modpack
+
+on:
+  workflow_dispatch:
+    inputs:
+      pack:
+        description: Folder name under modpacks, such as cold-war
+        type: string
+        required: true
+      mode:
+        description: Preview the card or post it once
+        type: choice
+        options: [preview, post]
+        default: preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discord-modlist-sync
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    if: inputs.mode == 'preview'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preview the card in the run summary
+        env:
+          PACK: ${{ inputs.pack }}
+        run: python3 .github/sync-discord.py "$PACK" preview
+
+  post:
+    if: inputs.mode == 'post' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Post the card and save its message ID
+        env:
+          PACK: ${{ inputs.pack }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python3 .github/sync-discord.py "$PACK" post

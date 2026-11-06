@@ -107,6 +107,7 @@ def estimate_size(item_ids):
     endpoint = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
     ordered_ids = sorted(item_ids)
     sizes = {}
+    details_by_id = {}
     for offset in range(0, len(ordered_ids), 50):
         batch = ordered_ids[offset:offset + 50]
         fields = {"itemcount": len(batch)}
@@ -126,14 +127,24 @@ def estimate_size(item_ids):
         if not isinstance(rows, list):
             continue
         for row in rows:
-            if not isinstance(row, dict) or row.get("result") != 1:
+            if not isinstance(row, dict):
                 continue
             item = str(row.get("publishedfileid", ""))
+            if item not in batch:
+                continue
+            result = row.get("result")
             size = str(row.get("file_size", ""))
-            if item in batch and re.fullmatch(r"[1-9][0-9]{0,19}", size):
+            if result == 1 and re.fullmatch(r"[1-9][0-9]{0,19}", size):
                 sizes[item] = int(size)
+            elif isinstance(result, int) and result != 1:
+                details_by_id[item] = f"Steam result {result}"
+            else:
+                details_by_id[item] = "no positive file size"
 
     print(f"Workshop size lookup: {len(sizes)}/{len(item_ids)} sizes read.")
+    for item in sorted(item_ids - sizes.keys()):
+        reason = details_by_id.get(item, "no item details returned")
+        print(f"Workshop size unavailable for item {item}: {reason}.")
     if len(sizes) != len(item_ids) and mode != "preview":
         raise SystemExit("Workshop size lookup incomplete. Existing Discord message was left unchanged.")
     if not sizes:

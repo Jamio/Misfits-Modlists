@@ -145,8 +145,14 @@ def estimate_size(item_ids):
     for item in sorted(item_ids - sizes.keys()):
         reason = details_by_id.get(item, "no item details returned")
         print(f"Workshop size unavailable for item {item}: {reason}.")
-    if len(sizes) != len(item_ids) and mode != "preview":
-        raise SystemExit("Workshop size lookup incomplete. Existing Discord message was left unchanged.")
+    # The 2041 preset intentionally includes this private Workshop item.
+    allowed_missing = {"3684321459"} if pack == "2041" else set()
+    missing = item_ids - sizes.keys()
+    if mode != "preview" and any(
+        item not in allowed_missing or details_by_id.get(item) != "Steam result 9"
+        for item in missing
+    ):
+        raise SystemExit("Workshop size lookup incomplete. Discord message was left unchanged.")
     if not sizes:
         return "unavailable (could not read Workshop sizes)"
     total_gb = Decimal(sum(sizes.values())) / 10**9

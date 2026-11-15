@@ -161,13 +161,21 @@ def estimate_size(item_ids):
         return f"{amount} subtotal ({len(sizes)}/{len(item_ids)} mods checked)"
     return amount
 
+preset_timestamp = subprocess.check_output(
+    ["git", "log", "-1", "--format=%ct", "--", preset.as_posix()],
+    text=True,
+).strip()
+if not preset_timestamp.isdigit():
+    raise SystemExit("Could not find the preset's last update in Git history.")
+updated_date = datetime.fromtimestamp(int(preset_timestamp), timezone.utc).strftime("%d %B %Y")
+
 template = Template(Path(".github/discord-modlist-message.md").read_text(encoding="utf-8"))
 try:
     description = template.substitute(
         modlist_name=preset.stem,
         mod_count=len(ids),
         workshop_size=estimate_size(ids),
-        updated_date=datetime.now(timezone.utc).strftime("%d %B %Y"),
+        updated_date=updated_date,
         dlc_list="\n".join(dlc_lines) or "None listed in the preset.",
     ).strip()
 except (ValueError, KeyError):

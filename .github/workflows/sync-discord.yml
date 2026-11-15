@@ -35,6 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           ref: ${{ github.event_name == 'push' && 'main' || github.sha }}
           persist-credentials: false
       - name: Preview or edit one registered pack
